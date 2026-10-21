@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-webapp
+  labels:
+    app.kubernetes.io/name: my-webapp
+    app.kubernetes.io/part-of: k8s-express-platform
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: my-webapp
+  template:
+    metadata:
+      labels:
+        app: my-webapp
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: webapp
+          image: k8s-express:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          
+          # Environment variables injected from ConfigMap and Secret
+          envFrom:
+            - configMapRef:
+                name: webapp-config
+            - secretRef:
+                name: webapp-secrets
+          
+          # Compute resource requests and limits
+          resources:
+            requests:
+              cpu: "150m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+          # Kubernetes Health Probes
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            failureThreshold: 30
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
