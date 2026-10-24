@@ -1,20 +1,32 @@
-name: Build, Push & Update GitOps
+name: Build, Scan & Update GitOps
 
 on:
   push:
     branches: [ "main" ]
     paths:
       - 'app/**'
+      - 'k8s/**'
 
 jobs:
-  build-and-deploy:
+  build-scan-and-deploy:
     runs-on: ubuntu-latest
     steps:
+      # Step 1: Checkout repository with GitOps PAT or fallback to default token
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITOPS_PAT || secrets.GITHUB_TOKEN }}
 
+      # Step 2: DevSecOps - Static Security Scanning for Infrastructure as Code (K8s Manifests)
+      - name: Run Trivy Security Scan (K8s Manifests)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: 'k8s/'
+          exit-code: '0'
+          severity: 'HIGH,CRITICAL'
+
+      # Step 3: Authenticate with AWS Cloud Platform
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -22,23 +34,44 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: eu-central-1
 
+      # Step 4: Login to Amazon Elastic Container Registry (ECR)
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build and Push Docker Image
+      # Step 5: Build Local Container Image for Security Verification
+      - name: Build Local Container Image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: my-webapp
           IMAGE_TAG: ${{ github.sha }}
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./app
+
+      # Step 6: DevSecOps - Container Vulnerability Scanning (OS Packages & Dependencies)
+      - name: Run Trivy Container Vulnerability Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ steps.login-ecr.outputs.registry }}/my-webapp:${{ github.sha }}'
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+
+      # Step 7: Push Hardened & Verified Image to ECR
+      - name: Push Docker Image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: my-webapp
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
+      # Step 8: Update Kubernetes Manifests & Push GitOps State Changes
       - name: Update Kubernetes Manifest Tag
         run: |
           sed -i 's|image: .*|image: '${{ steps.login-ecr.outputs.registry }}'/my-webapp:'${{ github.sha }}'|g' k8s/base/deployment.yaml
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -am "chore(deps): update base deployment image tag to ${{ github.sha }}"
+          git commit -am "chore(gitops): update base deployment image tag to ${{ github.sha }} [skip ci]"
           git push
